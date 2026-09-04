@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Cube Ninja Arena - Campaña Épica</title>
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background: #0f172a; 
+            font-family: 'Segoe UI', sans-serif; 
+            user-select: none; 
+            cursor: crosshair; 
+        }
+        #ui { position: absolute; top: 15px; left: 15px; color: #fff; background: rgba(20, 25, 35, 0.85); padding: 15px; border-radius: 8px; border: 1px solid #4a5568; pointer-events: none; z-index: 10; }
+        #menu { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #fff; background: rgba(20, 25, 35, 0.95); padding: 40px; border-radius: 15px; text-align: center; border: 2px solid #3498db; z-index: 20; box-shadow: 0 10px 25px rgba(0,0,0,0.5); cursor: default; }
+        input { padding: 12px; margin-bottom: 15px; font-size: 16px; background: #222; color: #fff; border: 1px solid #444; border-radius: 5px; text-align: center; width: 220px; cursor: text; }
+        button { padding: 12px 24px; font-size: 16px; background: #3498db; color: #fff; border: none; font-weight: bold; border-radius: 5px; cursor: pointer; transition: 0.2s; }
+        button:hover { background: #2980b9; transform: translateY(-2px); }
+        
+        .player-hp-container {
+            position: absolute; width: 60px; height: 8px; background: rgba(0,0,0,0.6);
+            border: 1px solid #000; border-radius: 2px; transform: translate(-50%, -50%); pointer-events: none; z-index: 5;
+        }
+        .player-hp-fill { height: 100%; background: #2ecc71; width: 100%; transition: width 0.1s; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body oncontextmenu="return false;">
+
+<div id="ui">
+    <div style="font-weight: bold; margin-bottom: 5px; color: #3498db;">CUBE NINJA ARENA</div>
+    <div>Jugador: <span id="pName">Ese</span></div>
+    <div>Monedas: <span id="gold">0</span></div>
+    <div>Vida: <span id="hpText">100/100</span></div>
+    <div style="color: #f1c40f; margin-top: 4px;">Progreso: <span id="waveText">Grupo 1 / 8</span></div>
+    <p style="margin: 8px 0 0 0; font-size: 11px; color: #cbd5e0;">[W / A / S / D] Mover | [Espacio x2] Doble Salto | [Clic] Disparar</p>
+</div>
+
+<div id="menu">
+    <h1 style="color: #3498db; margin-top: 0;">Cube Ninja</h1>
+    <p style="color: #aaa; font-size: 14px; margin-bottom: 20px;">Ingresa el nombre de tu ninja</p>
+    <input type="text" id="nameInput" placeholder="Nombre del ninja" autocomplete="off">
+    <br>
+    <button onclick="handleLogin()">Entrar al Pasillo</button>
+</div>
+
+<div id="playerHpBar" class="player-hp-container">
+    <div class="player-hp-fill" style="width: 100%;"></div>
+</div>
+
+<script>
+    window.addEventListener('keydown', e => {
+        if (
+            e.key === 'F12' || 
+            (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i' || e.key === 'J' || e.key === 'j')) || 
+            (e.ctrlKey && (e.key === 'U' || e.key === 'u'))
+        ) {
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
+        }
+    });
+
+    const PLAYER_KEY = 'cube_ninja_player';
+    let playerData = JSON.parse(localStorage.getItem(PLAYER_KEY));
+
+    function handleLogin() {
+        const name = document.getElementById('nameInput').value.trim() || "Ese";
+        playerData = { name: name, coins: 0, hp: 100, maxHp: 100 };
+        localStorage.setItem(PLAYER_KEY, JSON.stringify(playerData));
+        document.getElementById('menu').style.display = 'none';
+        initGame();
+    }
+
+    if (playerData) {
+        document.getElementById('menu').style.display = 'none';
+        window.addEventListener('DOMContentLoaded', initGame);
+    } else {
+        document.getElementById('playerHpBar').style.display = 'none';
+    }
+
+    let scene, camera, renderer;
+    let playerContainer, playerGroup;
+    let leftArm, rightArm, leftLeg, rightLeg;
+    let enemies = [];
+    let bullets = [];
+    let keys = {};
+    let mouse = new THREE.Vector2();
+    let raycaster = new THREE.Raycaster();
+    let planeGround = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    
+    let playerYVel = 0;
+    let isJumping = false;
+    let jumpCount = 0;
+    const maxJumps = 2;
+    
+    let isFlipping = false;
+    let flipRotation = 0;
+    let moveDirection = new THREE.Vector3();
+
+    let currentWave = 1;
+    const totalWaves = 8;
+    let waveSpawned = false;
+
+    const ARENA_WIDTH = 24;
+    const ARENA_LENGTH = 350;
+
+    function initGame() {
+        document.getElementById('playerHpBar').style.display = 'block';
+        document.getElementById('pName').innerText = playerData.name;
+        document.getElementById('gold').innerText = playerData.coins;
+        document.getElementById('hpText').innerText = `${playerData.hp}/${playerData.maxHp}`;
+        document.getElementById('waveText').innerText = `Grupo ${currentWave} / ${totalWaves}`;
+
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0f172a);
+        scene.fog = new THREE.FogExp2(0x0f172a, 0.008);
+
+        camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
+        
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(20, 40, 20);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        const ground = new THREE.Mesh(
+            new THREE.PlaneGeometry(ARENA_WIDTH, ARENA_LENGTH),
+            new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.9 })
+        );
+        ground.rotation.x = -Math.PI / 2;
+        ground.position.set(0, 0, -ARENA_LENGTH / 2 + 20);
+        scene.add(ground);
+
+        const wallMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.7 });
+        const leftWall = new THREE.Mesh(new THREE.BoxGeometry(2, 14, ARENA_LENGTH), wallMat);
+        leftWall.position.set(-ARENA_WIDTH / 2 - 1, 7, -ARENA_LENGTH / 2 + 20);
+        scene.add(leftWall);
+
+        const rightWall = new THREE.Mesh(new THREE.BoxGeometry(2, 14, ARENA_LENGTH), wallMat);
+        rightWall.position.set(ARENA_WIDTH / 2 + 1, 7, -ARENA_LENGTH / 2 + 20);
+        scene.add(rightWall);
+
+        for (let z = -40; z > -320; z -= 40) {
+            createObstaclePillars(z);
+        }
+
+        playerContainer = new THREE.Group();
+        playerGroup = new THREE.Group();
+        playerContainer.add(playerGroup);
+        scene.add(playerContainer);
+
+        const suitMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc });     
+        const darkSuitMat = new THREE.MeshStandardMaterial({ color: 0x64748b }); 
+        const skinMat = new THREE.MeshStandardMaterial({ color: 0xffdbac });     
+        const bandMat = new THREE.MeshStandardMaterial({ color: 0x0ea5e9 });     
+        const metalMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.8, roughness: 0.2 }); 
+
+        const torso = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.6), suitMat);
+        torso.position.y = 0.75;
+        playerGroup.add(torso);
+
+        const strap = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.15, 0.65), darkSuitMat);
+        strap.position.set(0, 0.75, 0);
+        strap.rotation.z = Math.PI / 6;
+        playerGroup.add(strap);
+
+        const head = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.75, 0.75), skinMat);
+        head.position.y = 1.45;
+        playerGroup.add(head);
+
+        const mask = new THREE.Mesh(new THREE.BoxGeometry(0.77, 0.38, 0.77), suitMat);
+        mask.position.set(0, 1.3, 0);
+        playerGroup.add(mask);
+
+        const eyeMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
+        const leftEye = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), eyeMat);
+        leftEye.position.set(0.2, 1.52, 0.39);
+        playerGroup.add(leftEye);
+
+        const rightEye = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), eyeMat);
+        rightEye.position.set(-0.2, 1.52, 0.39);
+        playerGroup.add(rightEye);
+
+        const headband = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.2, 0.78), bandMat);
+        headband.position.set(0, 1.7, 0);
+        playerGroup.add(headband);
+
+        const metalPlate = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.22, 0.8), metalMat);
+        metalPlate.position.set(0, 1.7, 0);
+        playerGroup.add(metalPlate);
+
+        leftArm = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.7, 0.25), suitMat);
+        leftArm.position.set(0.6, 0.75, 0);
+        playerGroup.add(leftArm);
+
+        rightArm = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.7, 0.25), suitMat);
+        rightArm.position.set(-0.6, 0.75, 0);
+        playerGroup.add(rightArm);
+
+        leftLeg = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.6, 0.35), darkSuitMat);
+        leftLeg.position.set(0.22, 0.3, 0);
+        playerGroup.add(leftLeg);
+
+        rightLeg = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.6, 0.35), darkSuitMat);
+        rightLeg.position.set(-0.22, 0.3, 0);
+        playerGroup.add(rightLeg);
+
+        const leftFoot = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.18, 0.45), suitMat);
+        leftFoot.position.set(0, -0.25, 0.05);
+        leftLeg.add(leftFoot);
+
+        const rightFoot = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.18, 0.45), suitMat);
+        rightFoot.position.set(0, -0.25, 0.05);
+        rightLeg.add(rightFoot);
+
+        playerContainer.position.set(0, 0, 10);
+
+        window.addEventListener('keydown', e => {
+            let key = e.key.toLowerCase();
+            if (['w', 'a', 's', 'd'].includes(key)) keys[key] = true;
+
+            if (e.code === 'Space') {
+                if (jumpCount < maxJumps) {
+                    playerYVel = 12.0;
+                    isJumping = true;
+                    jumpCount++;
+
+                    if (jumpCount === 2) {
+                        isFlipping = true;
+                        flipRotation = 0;
+                    }
+                }
+            }
+        });
+
+        window.addEventListener('keyup', e => {
+            let key = e.key.toLowerCase();
+            if (keys[key] !== undefined) keys[key] = false;
+        });
+
+        window.addEventListener('mousemove', e => {
+            mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+        });
+
+        window.addEventListener('mousedown', e => {
+            if (e.button === 0 && document.getElementById('menu').style.display === 'none') {
+                shootShuriken();
+            }
+        });
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        spawnWave(currentWave);
+        animate();
+    }
+
+    function createObstaclePillars(zPos) {
+        const mat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.5 });
+        const c1 = new THREE.Mesh(new THREE.BoxGeometry(2, 10, 2), mat);
+        c1.position.set(-8, 5, zPos);
+        scene.add(c1);
+
+        const c2 = new THREE.Mesh(new THREE.BoxGeometry(2, 10, 2), mat);
+        c2.position.set(8, 5, zPos);
+        scene.add(c2);
+    }
+
+    function spawnWave(wave) {
+        waveSpawned = true;
+        enemies = [];
+
+        if (wave === 1) {
+            createMob(-4, -25, false);
+            createMob(4, -25, false);
+        } else if (wave === 2) {
+            createMob(0, -65, false);
+            createMob(-6, -75, false);
+            createMob(6, -75, false);
+        } else if (wave === 3) {
+            createMob(-5, -105, false);
+            createMob(5, -115, false);
+            createMob(-3, -125, false);
+            createMob(3, -135, false);
+        } else if (wave === 4) {
+            for (let i = 0; i < 5; i++) {
+                createMob(-8 + (i * 4), -165, false);
+            }
+        } else if (wave === 5) {
+            createMob(-6, -200, false);
+            createMob(6, -200, false);
+            createMob(-6, -215, false);
+            createMob(6, -215, false);
+            createMob(-2, -225, false);
+            createMob(2, -225, false);
+        } else if (wave === 6) {
+            for (let i = 0; i < 5; i++) {
+                createMob((i - 2) * 3.5, -260 - (i * 4), false);
+            }
+        } else if (wave === 7) {
+            createMob(-5, -300, false);
+            createMob(5, -300, false);
+            createMob(-3, -310, false);
+            createMob(3, -310, false);
+            createMob(0, -320, false);
+            createMob(0, -330, false);
+        } else if (wave === 8) {
+            createMob(0, -340, true);
+            createMob(-6, -330, false);
+            createMob(6, -330, false);
+        }
+    }
+
+    function createMob(xOffset, zPos, isBoss) {
+        const monsterGroup = new THREE.Group();
+        
+        const scale = isBoss ? 2.5 : 1.2;
+        const color = isBoss ? 0x8b5cf6 : 0x2d3436; 
+        
+        const bodyMat = new THREE.MeshStandardMaterial({ color: color, roughness: 0.7 });
+        const body = new THREE.Mesh(new THREE.BoxGeometry(scale, scale, scale), bodyMat);
+        monsterGroup.add(body);
+
+        const eyeColor = isBoss ? 0xf1c40f : 0xff0055;
+        const eyeMat = new THREE.MeshBasicMaterial({ color: eyeColor });
+        const eyeSize = isBoss ? 0.4 : 0.2;
+        const eyeZ = scale / 2;
+
+        const eye1 = new THREE.Mesh(new THREE.BoxGeometry(eyeSize, eyeSize, 0.2), eyeMat);
+        eye1.position.set(scale * 0.25, scale * 0.1, eyeZ);
+        monsterGroup.add(eye1);
+        
+        const eye2 = new THREE.Mesh(new THREE.BoxGeometry(eyeSize, eyeSize, 0.2), eyeMat);
+        eye2.position.set(-scale * 0.25, scale * 0.1, eyeZ);
+        monsterGroup.add(eye2);
+
+        if (isBoss) {
+            const crown = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.5, 1.8), new THREE.MeshStandardMaterial({ color: 0xd97706 }));
+            crown.position.y = scale / 2 + 0.25;
+            monsterGroup.add(crown);
+        }
+
+        monsterGroup.position.set(xOffset, scale / 2, zPos);
+        scene.add(monsterGroup);
+
+        enemies.push({ 
+            mesh: monsterGroup, 
+            spawnPos: new THREE.Vector3(xOffset, scale / 2, zPos),
+            hp: isBoss ? 12 : 2, 
+            maxHp: isBoss ? 12 : 2,
+            speed: isBoss ? 3.0 : 3.8,
+            isBoss: isBoss,
+            agroRange: isBoss ? 25.0 : 16.0,
+            returnRange: 35.0,
+            isAggro: false
+        });
+    }
+
+    function shootShuriken() {
+        const shurikenGroup = new THREE.Group();
+        const metalMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.9, roughness: 0.1 });
+        
+        const blade1 = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.15, 0.05), metalMat);
+        const blade2 = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.5, 0.05), metalMat);
+        const center = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.08), new THREE.MeshStandardMaterial({ color: 0x1e293b }));
+        
+        shurikenGroup.add(blade1);
+        shurikenGroup.add(blade2);
+        shurikenGroup.add(center);
+
+        const angle = playerGroup.rotation.y;
+        const forwardDir = new THREE.Vector3(Math.sin(angle), 0, Math.cos(angle));
+
+        const spawnPos = playerContainer.position.clone().addScaledVector(forwardDir, 1.2);
+        spawnPos.y += 1.0;
+        shurikenGroup.position.copy(spawnPos);
+
+        shurikenGroup.userData = { 
+            direction: forwardDir, 
+            startPos: spawnPos.clone(),
+            maxRange: 35.0 
+        };
+
+        scene.add(shurikenGroup);
+        bullets.push(shurikenGroup);
+    }
+
+    let clock = new THREE.Clock();
+    let runAnimationTimer = 0;
+
+    function animate() {
+        requestAnimationFrame(animate);
+        let delta = clock.getDelta();
+        if (delta > 0.1) delta = 0.1;
+
+        moveDirection.set(0, 0, 0);
+        if (keys['w']) moveDirection.z -= 1;
+        if (keys['s']) moveDirection.z += 1;
+        if (keys['a']) moveDirection.x -= 1;
+        if (keys['d']) moveDirection.x += 1;
+
+        if (moveDirection.length() > 0) {
+            moveDirection.normalize();
+            const moveSpeed = 9.0;
+            playerContainer.position.x += moveDirection.x * moveSpeed * delta;
+            playerContainer.position.z += moveDirection.z * moveSpeed * delta;
+
+            if (!isJumping) {
+                runAnimationTimer += delta * 18;
+                leftLeg.rotation.x = Math.sin(runAnimationTimer) * 0.7;
+                rightLeg.rotation.x = -Math.sin(runAnimationTimer) * 0.7;
+                leftArm.rotation.x = -Math.sin(runAnimationTimer) * 0.6;
+                rightArm.rotation.x = Math.sin(runAnimationTimer) * 0.6;
+            }
+        } else if (!isJumping) {
+            leftLeg.rotation.x = 0;
+            rightLeg.rotation.x = 0;
+            leftArm.rotation.x = 0;
+            rightArm.rotation.x = 0;
+        }
+
+        raycaster.setFromCamera(mouse, camera);
+        let targetPoint = new THREE.Vector3();
+        raycaster.ray.intersectPlane(planeGround, targetPoint);
+        if (targetPoint) {
+            const dx = targetPoint.x - playerContainer.position.x;
+            const dz = targetPoint.z - playerContainer.position.z;
+            playerGroup.rotation.y = Math.atan2(dx, dz);
+        }
+
+        const limitX = ARENA_WIDTH / 2 - 1;
+        if (playerContainer.position.x < -limitX) playerContainer.position.x = -limitX;
+        if (playerContainer.position.x > limitX) playerContainer.position.x = limitX;
+
+        if (playerContainer.position.z > 15) playerContainer.position.z = 15;
+        if (playerContainer.position.z < -345) playerContainer.position.z = -345;
+
+        if (isJumping) {
+            playerYVel -= 35.0 * delta;
+            playerContainer.position.y += playerYVel * delta;
+
+            if (isFlipping) {
+                flipRotation -= 14.0 * delta; 
+                playerGroup.rotation.x = flipRotation;
+                
+                if (Math.abs(flipRotation) >= Math.PI * 2) {
+                    playerGroup.rotation.x = 0;
+                    isFlipping = false;
+                }
+            }
+
+            if (playerContainer.position.y <= 0) {
+                playerContainer.position.y = 0;
+                playerYVel = 0;
+                isJumping = false;
+                jumpCount = 0;
+                isFlipping = false;
+                playerGroup.rotation.x = 0;
+            }
+        }
+
+        if (enemies.length === 0 && waveSpawned) {
+            if (currentWave < totalWaves) {
+                currentWave++;
+                document.getElementById('waveText').innerText = `Grupo ${currentWave} / ${totalWaves}`;
+                waveSpawned = false;
+                spawnWave(currentWave);
+            } else if (currentWave === totalWaves) {
+                alert('¡Victoria Legendaria! Has superado los 7 grupos y derrotado al Boss Final.');
+                playerData.coins += 200;
+                document.getElementById('gold').innerText = playerData.coins;
+                localStorage.setItem(PLAYER_KEY, JSON.stringify(playerData));
+                currentWave = 1;
+                playerContainer.position.set(0, 0, 10);
+                document.getElementById('waveText').innerText = `Grupo ${currentWave} / ${totalWaves}`;
+                spawnWave(currentWave);
+            }
+        }
+
+        for (let i = bullets.length - 1; i >= 0; i--) {
+            let b = bullets[i];
+            b.position.addScaledVector(b.userData.direction, 35 * delta);
+            b.rotation.z += 15 * delta;
+
+            if (b.position.distanceTo(b.userData.startPos) > b.userData.maxRange) {
+                scene.remove(b);
+                bullets.splice(i, 1);
+                continue;
+            }
+
+            let hit = false;
+            for (let j = enemies.length - 1; j >= 0; j--) {
+                let en = enemies[j];
+                let hitDist = en.isBoss ? 2.0 : 1.2;
+                if (b.position.distanceTo(en.mesh.position) < hitDist) {
+                    en.hp--;
+                    hit = true;
+
+                    if (en.hp <= 0) {
+                        scene.remove(en.mesh);
+                        enemies.splice(j, 1);
+                        playerData.coins += en.isBoss ? 100 : 10;
+                        document.getElementById('gold').innerText = playerData.coins;
+                        localStorage.setItem(PLAYER_KEY, JSON.stringify(playerData));
+                    }
+                    break;
+                }
+            }
+
+            if (hit) {
+                scene.remove(b);
+                bullets.splice(i, 1);
+            }
+        }
+
+        for (let index = enemies.length - 1; index >= 0; index--) {
+            let en = enemies[index];
+            
+            const distToPlayer = en.mesh.position.distanceTo(playerContainer.position);
+            const distToSpawn = en.mesh.position.distanceTo(en.spawnPos);
+
+            if (distToPlayer < en.agroRange || en.isAggro) {
+                en.isAggro = true;
+            }
+
+            if (distToSpawn > en.returnRange && !en.isBoss) {
+                en.isAggro = false;
+            }
+
+            let targetPos = en.isAggro ? playerContainer.position : en.spawnPos;
+            
+            const moveDir = new THREE.Vector3();
+            moveDir.subVectors(targetPos, en.mesh.position);
+            moveDir.y = 0;
+
+            if (moveDir.length() > 0.2) {
+                moveDir.normalize();
+                en.mesh.position.addScaledVector(moveDir, en.speed * delta);
+                en.mesh.lookAt(targetPos.x, en.mesh.position.y, targetPoint ? targetPoint.z : targetPos.z);
+            }
+
+            const collisionDist = en.isBoss ? 2.0 : 1.2;
+            if (distToPlayer < collisionDist) {
+                if (playerYVel < 0 && playerContainer.position.y > en.mesh.position.y + 0.5 && !en.isBoss) {
+                    scene.remove(en.mesh);
+                    enemies.splice(index, 1);
+                    playerYVel = 9.0;
+                    
+                    playerData.coins += 5;
+                    document.getElementById('gold').innerText = playerData.coins;
+                    localStorage.setItem(PLAYER_KEY, JSON.stringify(playerData));
+                } else {
+                    let damage = en.isBoss ? 30 : 15;
+                    playerData.hp -= damage;
+                    document.getElementById('hpText').innerText = `${playerData.hp}/${playerData.maxHp}`;
+                    document.querySelector('.player-hp-fill').style.width = `${Math.max(0, (playerData.hp/playerData.maxHp)*100)}%`;
+                    
+                    if (!en.isBoss) {
+                        scene.remove(en.mesh);
+                        enemies.splice(index, 1);
+                    }
+
+                    if (playerData.hp <= 0) {
+                        alert('¡Game Over! Los centinelas te han derrotado.');
+                        playerData.hp = playerData.maxHp;
+                        document.getElementById('hpText').innerText = `${playerData.hp}/${playerData.maxHp}`;
+                        document.querySelector('.player-hp-fill').style.width = '100%';
+                        playerContainer.position.set(0, 0, 10);
+                        currentWave = 1;
+                        document.getElementById('waveText').innerText = `Grupo ${currentWave} / ${totalWaves}`;
+                        spawnWave(currentWave);
+                    }
+                }
+            }
+        }
+
+        let vector = playerContainer.position.clone();
+        vector.y += 2.5;
+        vector.project(camera);
+        let x = (vector.x * .5 + .5) * window.innerWidth;
+        let y = (vector.y * -.5 + .5) * window.innerHeight;
+        const hpBar = document.getElementById('playerHpBar');
+        hpBar.style.left = `${x}px`;
+        hpBar.style.top = `${y}px`;
+
+        camera.position.set(
+            playerContainer.position.x, 
+            playerContainer.position.y + 12, 
+            playerContainer.position.z + 12
+        );
+        camera.lookAt(
+            playerContainer.position.x, 
+            playerContainer.position.y, 
+            playerContainer.position.z - 2
+        );
+
+        renderer.render(scene, camera);
+    }
+</script>
+</body>
+</html>
